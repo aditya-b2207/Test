@@ -1,77 +1,13 @@
-USE [SOProdBackup5Nov25]
-GO
-/****** Object:  StoredProcedure [dbo].[GetDashboardOutstanding]    Script Date: 27-11-2025 11:49:54 ******/
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
-ALTER PROCEDURE [dbo].[GetDashboardOutstanding]
-    @CompanyCode BIGINT,
-    @CustomerCodes NVARCHAR(MAX)
-AS
-BEGIN
-    SET NOCOUNT ON;
+DECLARE @FromDate date = '2025-11-20';
+DECLARE @ToDate   date = '2025-11-26';
 
-    -- Split customer list
-    DECLARE @CustomerCodeTable TABLE (CustomerCode NVARCHAR(50) PRIMARY KEY);
-    INSERT INTO @CustomerCodeTable
-    SELECT LTRIM(RTRIM(value))
-    FROM STRING_SPLIT(@CustomerCodes, ',')
-    WHERE LTRIM(RTRIM(value)) <> '';
-
-    /* Step 1: Get latest UpdatedAt per CCA per Customer */
-    ;WITH LatestData AS
-    (
-        SELECT
-            ar.CompanyCode,
-            ar.CustomerCode,
-            ar.CustomerName,
-            LTRIM(RTRIM(ar.CCA)) AS CCA,
-            ar.[0_30_Days],
-            ar.[31_60_Days],
-            ar.[61_90_Days],
-            ar.[91_120_Days],
-            ar.[121_150_Days],
-            ar.[151_180_Days],
-            ar.[181_210_Days],
-            ar.[210_365_Days],
-            ar.[Over_365_Days],
-            ar.TLAMT,
-            TRY_CONVERT(datetime2, ar.updated_by, 120) AS UpdatedAt,
-            ROW_NUMBER() OVER (
-                PARTITION BY ar.CustomerCode, ar.CCA
-                ORDER BY TRY_CONVERT(datetime2, ar.updated_by, 120) DESC
-            ) AS rn
-        FROM TB_CustomerAgeingReport ar
-        WHERE ar.CompanyCode = @CompanyCode
-          AND ar.CCA IN ('AGSD', 'AGSV')
-          AND EXISTS (SELECT 1 FROM @CustomerCodeTable c WHERE c.CustomerCode = ar.CustomerCode)
-          AND ar.GLAccount <> '23587002'
-    )
-
-    /* Step 2: Keep only latest row per CCA per customer */
-    , FilteredLatest AS
-    (
-        SELECT *
-        FROM LatestData
-        WHERE rn = 1
-    )
-
-    /* Step 3: Final SUM per CCA */
-    SELECT
-        CCA,
-        SUM(ISNULL([0_30_Days],0)) AS [0_30_Days],
-        SUM(ISNULL([31_60_Days],0)) AS [31_60_Days],
-        SUM(ISNULL([61_90_Days],0)) AS [61_90_Days],
-        SUM(ISNULL([91_120_Days],0)) AS [91_120_Days],
-        SUM(ISNULL([121_150_Days],0)) AS [121_150_Days],
-        SUM(ISNULL([151_180_Days],0)) AS [151_180_Days],
-        SUM(ISNULL([181_210_Days],0)) AS [181_210_Days],
-        SUM(ISNULL([210_365_Days],0)) AS [210_365_Days],
-        SUM(ISNULL([Over_365_Days],0)) AS [Over_365_Days],
-        SUM(ISNULL(TLAMT,0)) AS TLAMT,
-        MAX(UpdatedAt) AS UpdatedAt   -- latest timestamp of that CCA
-    FROM FilteredLatest
-    GROUP BY CCA
-    ORDER BY CCA;
-END
+SELECT 
+    UserCode,
+    CAST(LoginDateTime AS date) AS LoginDate,
+    MAX(LoginDateTime) AS LastLoginThatDay
+FROM UserLoginInfos
+WHERE LoginDateTime >= @FromDate
+  AND LoginDateTime < DATEADD(DAY, 1, @ToDate)
+GROUP BY 
+    UserCode,
+    CAST(LoginDateTime AS date);
