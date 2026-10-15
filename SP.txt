@@ -39,59 +39,32 @@ WHERE updated_by IS NOT NULL;
 
 
 
+
 SELECT
-    DB_NAME() AS CurrentDatabase,
-    SERVERPROPERTY('Edition') AS Edition,
+    DB_NAME() AS DatabaseName,
+    r.session_id,
+    r.command,
+    r.status,
+    r.wait_type,
+    r.blocking_session_id,
+    CAST(r.total_elapsed_time / 60000.0
+        AS DECIMAL(18,2)) AS ElapsedMinutes,
+    r.cpu_time,
+    r.reads,
+    r.writes,
+    r.logical_reads,
+    LEFT(t.text, 500) AS RunningSQL
+FROM sys.dm_exec_requests AS r
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+WHERE r.database_id = DB_ID()
+  AND r.session_id <> @@SPID
+ORDER BY r.total_elapsed_time DESC;
+
+----------------------------------------------
+SELECT
+    DB_NAME() AS DatabaseName,
+    DATABASEPROPERTYEX(DB_NAME(), 'Edition')
+        AS ServiceTier,
     DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective')
         AS ServiceObjective;
 
----------------------------
-SELECT TOP (10)
-    end_time,
-    avg_cpu_percent,
-    avg_data_io_percent,
-    avg_log_write_percent,
-    avg_memory_usage_percent
-FROM sys.dm_db_resource_stats
-ORDER BY end_time DESC;
-
-----Output:
-end_time	avg_cpu_percent	avg_data_io_percent	avg_log_write_percent	avg_memory_usage_percent
-2026-10-15 06:26:17.770	1.86	0.00	0.00	68.33
-2026-10-15 06:26:02.740	2.32	0.00	0.07	68.33
-2026-10-15 06:25:47.710	1.99	0.00	0.02	68.33
-2026-10-15 06:25:32.690	66.16	0.00	0.14	68.33
-2026-10-15 06:25:17.667	69.67	0.00	0.09	68.33
-2026-10-15 06:25:02.640	3.52	0.00	0.09	68.33
-2026-10-15 06:24:47.617	12.11	0.41	0.08	68.33
-2026-10-15 06:24:32.590	99.60	6.85	0.12	68.33
-2026-10-15 06:24:17.550	91.47	6.24	0.14	68.33
-2026-10-15 06:24:02.530	4.92	0.00	0.11	68.66
-
-----------------------------------------------------------------
-
-SELECT
-    CAST(total_log_size_in_bytes / 1048576.0
-        AS DECIMAL(18,2)) AS TotalLogMB,
-    CAST(used_log_space_in_bytes / 1048576.0
-        AS DECIMAL(18,2)) AS UsedLogMB,
-    CAST(used_log_space_in_percent
-        AS DECIMAL(18,2)) AS LogUsedPercent
-FROM sys.dm_db_log_space_usage;
-
--------Output:
-TotalLogMB	UsedLogMB	LogUsedPercent
-583.99	12.59	2.16
-
-----------------------------------------------------------------
-SELECT
-    name AS IndexName,
-    type_desc AS IndexType,
-    is_disabled
-FROM sys.indexes
-WHERE object_id =
-    OBJECT_ID('dbo.TB_CustomerAgeingReport');
-
-------Output:
-IndexName	IndexType	is_disabled
-NULL	HEAP	0
