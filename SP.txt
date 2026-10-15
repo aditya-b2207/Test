@@ -1,24 +1,556 @@
+/****** Object:  StoredProcedure [dbo].[GetProductOffering_MASL]    Script Date: 10/15/2026 12:52:18 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
 
-SET STATISTICS IO ON;
-SET STATISTICS TIME ON;
 
-DECLARE
-    @IsEligible BIT,
-    @ResultMessage NVARCHAR(500),
-    @OutstandingAmount DECIMAL(18,2);
+ALTER PROCEDURE [dbo].[GetProductOffering_MASL]
+    @CompanyCode   INT,
+    @CustomerCode  NVARCHAR(50),
+    @PageNumber    INT = 1,
+    @PageSize      INT = 20
+AS
+BEGIN
+    SET NOCOUNT ON;
 
-EXEC dbo.Check_Customer_Payment_Status
-    @CompanyCode = '1049',
-    @CustomerCode = 'YOUR_CUSTOMER_CODE',
-    @Division = '25',
-    @IsEligible = @IsEligible OUTPUT,
-    @ResultMessage = @ResultMessage OUTPUT,
-    @OutstandingAmount = @OutstandingAmount OUTPUT;
+    BEGIN TRY
 
-SELECT
-    @IsEligible AS IsEligible,
-    @ResultMessage AS ResultMessage,
-    @OutstandingAmount AS OutstandingAmount;
+        ------------------------------------------------------------
+        -- 1. PAGINATION VALIDATION
+        ------------------------------------------------------------
+        IF @PageNumber IS NULL OR @PageNumber <= 0
+            SET @PageNumber = 1;
 
-SET STATISTICS IO OFF;
-SET STATISTICS TIME OFF;
+        IF @PageSize IS NULL OR @PageSize <= 0
+            SET @PageSize = 20;
+
+        -- Prevent very large requests
+        IF @PageSize > 100
+            SET @PageSize = 100;
+
+
+        ------------------------------------------------------------
+        -- 2. VARIABLES
+        ------------------------------------------------------------
+        DECLARE @CurrentDate DATE = CAST(GETDATE() AS DATE);
+
+        DECLARE @SalesOrg NVARCHAR(10) = N'AG01';
+
+        DECLARE @CustomerRegion NVARCHAR(50);
+
+
+        ------------------------------------------------------------
+        -- 3. FETCH CUSTOMER REGION
+        ------------------------------------------------------------
+        SELECT TOP (1)
+            @CustomerRegion = LTRIM(RTRIM(Region))
+        FROM TB_CustomerMaster WITH (NOLOCK)
+        WHERE CompanyCode = @CompanyCode
+          AND CustomerCode = @CustomerCode;
+
+
+        ------------------------------------------------------------
+        -- 4. CONDITION TABLE PRIORITY
+        ------------------------------------------------------------
+        DECLARE @ConditionTablePriority TABLE
+        (
+            PriorityOrder INT,
+            ConditionTable NVARCHAR(5)
+        );
+
+        INSERT INTO @ConditionTablePriority
+        (
+            PriorityOrder,
+            ConditionTable
+        )
+        VALUES
+            (1, 'A860'),
+            (2, 'A935'),
+            (3, 'A933'),
+            (4, 'A862'),
+            (5, 'A559');
+
+
+        ------------------------------------------------------------
+        -- 5. FETCH VALID PRODUCTS + CALCULATE CUSTOMER PRICE
+        ------------------------------------------------------------
+        ;WITH ValidProducts AS
+        (
+            SELECT
+                PM.CompanyCode,
+
+                ISNULL(
+                    PM.ProductId,
+                    PI.ProductId
+                ) AS ProductId,
+
+                PM.Material_Number,
+                PM.Material_Description,
+                PM.Crop,
+                PM.Variety,
+                PM.Stage,
+                PM.Grade,
+                PM.Unit_Of_Measurement,
+
+                PI.APIURL AS ImagePath,
+
+                PM.Priority,
+                PM.PackSize,
+                PM.DIVISION
+
+            FROM TB_PriceMaster PM WITH (NOLOCK)
+
+            LEFT JOIN TB_ProductImages PI WITH (NOLOCK)
+                ON PM.CompanyCode = PI.CompanyCode
+                AND
+                (
+                    PM.Material_Description LIKE PI.ProductName + '%'
+                    OR
+                    PM.Material_Description LIKE '%' + PI.ProductName + '%'
+                )
+
+            WHERE PM.CompanyCode = @CompanyCode
+
+              AND PM.Condition_Type = 'ZBAG'
+
+              AND
+              (
+                    @CurrentDate >= PM.Valid_From
+                    OR PM.Valid_From IS NULL
+              )
+
+              AND
+              (
+                    @CurrentDate <= PM.Valid_To
+                    OR PM.Valid_To IS NULL
+              )
+
+              AND
+              (
+                    PM.Deletion_Indicator IS NULL
+                    OR PM.Deletion_Indicator NOT LIKE '%X%'
+              )
+
+              AND UPPER(
+                    LTRIM(
+                        RTRIM(PM.Crop)
+                    )
+                  ) <> 'UNKNOWN'
+
+              AND PI.APIURL IS NOT NULL
+        ),
+
+
+        ------------------------------------------------------------
+        -- 6. FIND APPLICABLE CONDITION / PRICE
+        ------------------------------------------------------------
+        ProductConditions AS
+        (
+            SELECT
+                VP.Material_Number,
+                VP.Material_Description,
+
+                ctp.PriorityOrder,
+                ctp.ConditionTable,
+
+                bag.Condition_Amount AS BagAmount,
+
+                dis.Condition_Amount AS DisAmount,
+                dis.Condition_Unit   AS DisUnit,
+
+                CASE
+
+                    WHEN dis.Condition_Amount IS NOT NULL
+                         AND
+                         (
+                             dis.Condition_Unit = '%'
+                             OR dis.Condition_Unit <> '%'
+                             OR dis.Condition_Unit IS NULL
+                         )
+                    THEN
+                        bag.Condition_Amount
+                        -
+                        (
+                            bag.Condition_Amount
+                            *
+                            (
+                                ABS(
+                                    CAST(
+                                        dis.Condition_Amount
+                                        AS DECIMAL(18,2)
+                                    )
+                                ) / 10.0
+                            )
+                            / 100.0
+                        )
+
+                    WHEN dis.Condition_Amount IS NOT NULL
+                         AND
+                         (
+                             dis.Condition_Unit <> '%'
+                             OR dis.Condition_Unit IS NULL
+                         )
+                    THEN
+                        bag.Condition_Amount
+                        -
+                        dis.Condition_Amount
+
+                    ELSE
+                        bag.Condition_Amount
+
+                END AS CalculatedPrice,
+
+
+                ROW_NUMBER() OVER
+                (
+                    PARTITION BY VP.Material_Number
+                    ORDER BY ctp.PriorityOrder
+                ) AS ConditionPriorityRank
+
+            FROM ValidProducts VP
+
+            JOIN @ConditionTablePriority ctp
+                ON 1 = 1
+
+
+            --------------------------------------------------------
+            -- ZBAG BASE PRICE
+            --------------------------------------------------------
+            LEFT JOIN TB_PriceMaster bag WITH (NOLOCK)
+
+                ON bag.CompanyCode = @CompanyCode
+
+                AND bag.Material_Number =
+                    VP.Material_Number
+
+                AND bag.Condition_Table =
+                    ctp.ConditionTable
+
+                AND bag.Condition_Type =
+                    'ZBAG'
+
+                AND bag.SalesOrganisation =
+                    @SalesOrg
+
+                AND
+                (
+                    (
+                        ctp.ConditionTable = 'A860'
+                        AND bag.Customer_Number =
+                            @CustomerCode
+                    )
+
+                    OR
+
+                    (
+                        ctp.ConditionTable = 'A935'
+                        AND bag.Region =
+                            @CustomerRegion
+                    )
+
+                    OR
+
+                    (
+                        ctp.ConditionTable = 'A933'
+                    )
+
+                    OR
+
+                    (
+                        ctp.ConditionTable = 'A862'
+                    )
+
+                    OR
+
+                    (
+                        ctp.ConditionTable = 'A559'
+                    )
+                )
+
+                AND
+                (
+                    @CurrentDate >= bag.Valid_From
+                    OR bag.Valid_From IS NULL
+                )
+
+                AND
+                (
+                    @CurrentDate <= bag.Valid_To
+                    OR bag.Valid_To IS NULL
+                )
+
+                AND
+                (
+                    bag.Deletion_Indicator IS NULL
+                    OR bag.Deletion_Indicator NOT LIKE '%X%'
+                )
+
+
+            --------------------------------------------------------
+            -- ZDIS DISCOUNT
+            --------------------------------------------------------
+            LEFT JOIN TB_PriceMaster dis WITH (NOLOCK)
+
+                ON dis.CompanyCode =
+                    bag.CompanyCode
+
+                AND dis.Material_Number =
+                    bag.Material_Number
+
+                AND dis.Condition_Table =
+                    bag.Condition_Table
+
+                AND dis.Condition_Type =
+                    'ZDIS'
+
+                AND dis.SalesOrganisation =
+                    bag.SalesOrganisation
+
+                AND
+                (
+                    (
+                        ctp.ConditionTable = 'A860'
+                        AND dis.Customer_Number =
+                            @CustomerCode
+                    )
+
+                    OR
+
+                    (
+                        ctp.ConditionTable = 'A935'
+                        AND dis.Region =
+                            @CustomerRegion
+                    )
+
+                    OR
+
+                    (
+                        ctp.ConditionTable IN
+                        (
+                            'A933',
+                            'A862',
+                            'A559'
+                        )
+                    )
+                )
+
+                AND
+                (
+                    @CurrentDate >= dis.Valid_From
+                    OR dis.Valid_From IS NULL
+                )
+
+                AND
+                (
+                    @CurrentDate <= dis.Valid_To
+                    OR dis.Valid_To IS NULL
+                )
+
+                AND
+                (
+                    dis.Deletion_Indicator IS NULL
+                    OR dis.Deletion_Indicator NOT LIKE '%X%'
+                )
+
+
+            WHERE bag.Condition_Amount IS NOT NULL
+        ),
+
+
+        ------------------------------------------------------------
+        -- 7. PICK HIGHEST PRIORITY PRICE FOR EACH MATERIAL
+        ------------------------------------------------------------
+        RankedProductWithPrice AS
+        (
+            SELECT
+                VP.*,
+
+                PC.CalculatedPrice AS Condition_Amount,
+
+                ROW_NUMBER() OVER
+                (
+                    PARTITION BY VP.Material_Number
+                    ORDER BY
+                        PC.ConditionPriorityRank
+                ) AS PriceRank
+
+            FROM ValidProducts VP
+
+            JOIN ProductConditions PC
+                ON VP.Material_Number =
+                    PC.Material_Number
+
+                AND PC.ConditionPriorityRank = 1
+        )
+
+
+        ------------------------------------------------------------
+        -- 8. MATERIALIZE FINAL PRODUCT RESULT
+        --
+        -- Required because:
+        -- Result Set 1 = paginated products
+        -- Result Set 2 = total product count
+        ------------------------------------------------------------
+        SELECT
+            CompanyCode,
+            ProductId,
+            Material_Number,
+            Material_Description,
+            Crop,
+            Variety,
+            Stage,
+            Grade,
+            Unit_Of_Measurement,
+            ImagePath,
+            Condition_Amount,
+            Priority,
+            PackSize,
+            DIVISION AS Division
+
+        INTO #FinalProducts
+
+        FROM RankedProductWithPrice
+
+        WHERE PriceRank = 1;
+
+
+        ------------------------------------------------------------
+        -- 9. FIRST RESULT SET
+        -- RETURN CURRENT PAGE ONLY
+        ------------------------------------------------------------
+        SELECT
+            CompanyCode,
+            Material_Number,
+            Material_Description,
+            Crop,
+            Variety,
+            Stage,
+            Grade,
+            Unit_Of_Measurement,
+            ImagePath,
+            Condition_Amount,
+            PackSize,
+            Division
+
+        FROM #FinalProducts
+
+        ORDER BY
+            Priority ASC,
+            Material_Number ASC
+
+        OFFSET
+            ((@PageNumber - 1) * @PageSize)
+            ROWS
+
+        FETCH NEXT
+            @PageSize ROWS ONLY
+
+        OPTION (RECOMPILE);
+
+
+        ------------------------------------------------------------
+        -- 10. SECOND RESULT SET
+        -- TOTAL RECORDS FOR FRONTEND PAGINATION
+        ------------------------------------------------------------
+        SELECT
+            COUNT(1) AS TotalRecords
+
+        FROM #FinalProducts;
+
+
+        ------------------------------------------------------------
+        -- 11. CLEANUP
+        ------------------------------------------------------------
+        DROP TABLE #FinalProducts;
+
+    END TRY
+
+
+    BEGIN CATCH
+
+        ------------------------------------------------------------
+        -- CLEAN TEMP TABLE IF ERROR OCCURS
+        ------------------------------------------------------------
+        IF OBJECT_ID('tempdb..#FinalProducts') IS NOT NULL
+        BEGIN
+            DROP TABLE #FinalProducts;
+        END;
+
+
+        ------------------------------------------------------------
+        -- LOG ERROR
+        ------------------------------------------------------------
+        INSERT INTO ErrorLog_GetProductOffering
+        (
+            ErrorMessage,
+            ErrorSeverity,
+            ErrorState,
+            ProcedureName,
+            ErrorLine,
+            ErrorDate
+        )
+        VALUES
+        (
+            ERROR_MESSAGE(),
+            ERROR_SEVERITY(),
+            ERROR_STATE(),
+            'GetProductOffering_MASL',
+            ERROR_LINE(),
+            GETDATE()
+        );
+
+
+        ------------------------------------------------------------
+        -- FIRST RESULT SET
+        -- EMPTY PRODUCT RESULT
+        ------------------------------------------------------------
+        SELECT
+            CAST(NULL AS BIGINT)
+                AS CompanyCode,
+
+            CAST(NULL AS NVARCHAR(100))
+                AS Material_Number,
+
+            CAST(NULL AS NVARCHAR(500))
+                AS Material_Description,
+
+            CAST(NULL AS NVARCHAR(200))
+                AS Crop,
+
+            CAST(NULL AS NVARCHAR(200))
+                AS Variety,
+
+            CAST(NULL AS NVARCHAR(100))
+                AS Stage,
+
+            CAST(NULL AS NVARCHAR(100))
+                AS Grade,
+
+            CAST(NULL AS NVARCHAR(100))
+                AS Unit_Of_Measurement,
+
+            CAST(NULL AS NVARCHAR(1000))
+                AS ImagePath,
+
+            CAST(NULL AS DECIMAL(18,2))
+                AS Condition_Amount,
+
+            CAST(NULL AS NVARCHAR(100))
+                AS PackSize,
+
+            CAST(NULL AS NVARCHAR(100))
+                AS Division
+
+        WHERE 1 = 0;
+
+
+        ------------------------------------------------------------
+        -- SECOND RESULT SET
+        ------------------------------------------------------------
+        SELECT
+            0 AS TotalRecords;
+
+    END CATCH;
+
+END;
