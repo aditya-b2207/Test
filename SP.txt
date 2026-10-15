@@ -39,7 +39,38 @@ WHERE updated_by IS NOT NULL;
 
 
 
-FileName	FileType	FilePath	FileSizeMB	growth	is_percent_growth
-data_0	ROWS	43964a79-1535-4142-b563-bb0f10bf39b7_1.mdf	1552.00	2048	0
-log	LOG	43964a79-1535-4142-b563-bb0f10bf39b7_2.ldf	584.00	2048	0
-XTP	FILESTREAM	74d548b9-1ba0-404a-9af4-6240dc45b0a4.xtp	0.00	0	0
+SELECT
+    DB_NAME() AS CurrentDatabase,
+    SERVERPROPERTY('Edition') AS Edition,
+    DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective')
+        AS ServiceObjective;
+
+---------------------------
+SELECT TOP (10)
+    end_time,
+    avg_cpu_percent,
+    avg_data_io_percent,
+    avg_log_write_percent,
+    avg_memory_usage_percent
+FROM sys.dm_db_resource_stats
+ORDER BY end_time DESC;
+
+-----------------------------
+SELECT
+    CAST(total_log_size_in_bytes / 1048576.0
+        AS DECIMAL(18,2)) AS TotalLogMB,
+    CAST(used_log_space_in_bytes / 1048576.0
+        AS DECIMAL(18,2)) AS UsedLogMB,
+    CAST(used_log_space_in_percent
+        AS DECIMAL(18,2)) AS LogUsedPercent
+FROM sys.dm_db_log_space_usage;
+
+--------------------------------
+
+SELECT
+    name AS IndexName,
+    type_desc AS IndexType,
+    is_disabled
+FROM sys.indexes
+WHERE object_id =
+    OBJECT_ID('dbo.TB_CustomerAgeingReport');
