@@ -60,6 +60,12 @@ WHERE r.database_id = DB_ID()
   AND r.session_id <> @@SPID
 ORDER BY r.total_elapsed_time DESC;
 
+--Output:
+DatabaseName	session_id	command	status	wait_type	blocking_session_id	ElapsedMinutes	cpu_time	reads	writes	logical_reads	RunningSQL
+mazpagricusdb-db	68	HADR_WINFAB_REPLICA_MGR	background	HADR_FABRIC_CALLBACK	0	11799.58	15	0	0	0	NULL
+mazpagricusdb-db	98	SELECT INTO	runnable	NULL	0	0.06	388	0	42	75125	    CREATE PROCEDURE [dbo].[GetProductOffering_MASL]      @CompanyCode   INT,      @CustomerCode  NVARCHAR(50),      @PageNumber    INT = 1,      @PageSize      INT = 20  AS  BEGIN      SET NOCOUNT ON;        BEGIN TRY            ------------------------------------------------------------          -- 1. PAGINATION VALIDATION          ------------------------------------------------------------          IF @PageNumber IS NULL OR @PageNumber <= 0              SET @PageNumber = 1;            IF @P
+
+
 ----------------------------------------------
 SELECT
     DB_NAME() AS DatabaseName,
@@ -67,4 +73,6 @@ SELECT
         AS ServiceTier,
     DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective')
         AS ServiceObjective;
-
+----Output
+DatabaseName	ServiceTier	ServiceObjective
+mazpagricusdb-db	Standard	S0
