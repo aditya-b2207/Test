@@ -1,9 +1,16 @@
 -- 1. Existing indexes
 EXEC sp_helpindex 'dbo.TB_CustomerAgeingReport';
 
+Output:  The object 'dbo.TB_CustomerAgeingReport' does not have any indexes, or you do not have permissions.
+
+--------------------------------------------------------------------------------------------------------------------------
 -- 2. Total records
 SELECT COUNT_BIG(*) AS TotalRecords
 FROM dbo.TB_CustomerAgeingReport;
+
+Output: 4235555
+
+--------------------------------------------------------------------------------------------------------------------------
 
 -- 3. Updated_by data type
 SELECT
@@ -13,3 +20,7 @@ FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA = 'dbo'
   AND TABLE_NAME = 'TB_CustomerAgeingReport'
   AND COLUMN_NAME = 'updated_by';
+
+Output: 
+COLUMN_NAME	DATA_TYPE
+updated_by	nvarchar
