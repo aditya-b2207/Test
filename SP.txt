@@ -39,15 +39,7 @@ WHERE updated_by IS NOT NULL;
 
 
 
-
-USE DealerPortalDB;
-GO
-
-SELECT
-    name AS FileName,
-    type_desc AS FileType,
-    physical_name AS FilePath,
-    CAST(size * 8.0 / 1024 AS DECIMAL(18,2)) AS FileSizeMB,
-    growth,
-    is_percent_growth
-FROM sys.database_files;
+FileName	FileType	FilePath	FileSizeMB	growth	is_percent_growth
+data_0	ROWS	43964a79-1535-4142-b563-bb0f10bf39b7_1.mdf	1552.00	2048	0
+log	LOG	43964a79-1535-4142-b563-bb0f10bf39b7_2.ldf	584.00	2048	0
+XTP	FILESTREAM	74d548b9-1ba0-404a-9af4-6240dc45b0a4.xtp	0.00	0	0
