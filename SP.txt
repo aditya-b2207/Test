@@ -55,7 +55,21 @@ SELECT TOP (10)
 FROM sys.dm_db_resource_stats
 ORDER BY end_time DESC;
 
------------------------------
+----Output:
+end_time	avg_cpu_percent	avg_data_io_percent	avg_log_write_percent	avg_memory_usage_percent
+2026-10-15 06:26:17.770	1.86	0.00	0.00	68.33
+2026-10-15 06:26:02.740	2.32	0.00	0.07	68.33
+2026-10-15 06:25:47.710	1.99	0.00	0.02	68.33
+2026-10-15 06:25:32.690	66.16	0.00	0.14	68.33
+2026-10-15 06:25:17.667	69.67	0.00	0.09	68.33
+2026-10-15 06:25:02.640	3.52	0.00	0.09	68.33
+2026-10-15 06:24:47.617	12.11	0.41	0.08	68.33
+2026-10-15 06:24:32.590	99.60	6.85	0.12	68.33
+2026-10-15 06:24:17.550	91.47	6.24	0.14	68.33
+2026-10-15 06:24:02.530	4.92	0.00	0.11	68.66
+
+----------------------------------------------------------------
+
 SELECT
     CAST(total_log_size_in_bytes / 1048576.0
         AS DECIMAL(18,2)) AS TotalLogMB,
@@ -65,8 +79,11 @@ SELECT
         AS DECIMAL(18,2)) AS LogUsedPercent
 FROM sys.dm_db_log_space_usage;
 
---------------------------------
+-------Output:
+TotalLogMB	UsedLogMB	LogUsedPercent
+583.99	12.59	2.16
 
+----------------------------------------------------------------
 SELECT
     name AS IndexName,
     type_desc AS IndexType,
@@ -74,3 +91,7 @@ SELECT
 FROM sys.indexes
 WHERE object_id =
     OBJECT_ID('dbo.TB_CustomerAgeingReport');
+
+------Output:
+IndexName	IndexType	is_disabled
+NULL	HEAP	0
