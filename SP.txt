@@ -43,19 +43,11 @@ WHERE updated_by IS NOT NULL;
 USE DealerPortalDB;
 GO
 
--- Transaction log usage
 SELECT
-    total_log_size_in_bytes / 1048576.0 AS TotalLogMB,
-    used_log_space_in_bytes / 1048576.0 AS UsedLogMB,
-    used_log_space_in_percent AS LogUsedPercent
-FROM sys.dm_db_log_space_usage;
-
--- Database files and disk space
-SELECT
-    f.name AS FileName,
-    f.type_desc,
-    f.physical_name,
-    CAST(f.size * 8.0 / 1024 AS DECIMAL(18,2)) AS FileSizeMB,
-    CAST(v.available_bytes / 1073741824.0 AS DECIMAL(18,2)) AS DiskFreeGB
-FROM sys.database_files f
-CROSS APPLY sys.dm_os_volume_stats(DB_ID(), f.file_id) v;
+    name AS FileName,
+    type_desc AS FileType,
+    physical_name AS FilePath,
+    CAST(size * 8.0 / 1024 AS DECIMAL(18,2)) AS FileSizeMB,
+    growth,
+    is_percent_growth
+FROM sys.database_files;
