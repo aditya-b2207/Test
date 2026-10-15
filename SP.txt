@@ -1,13 +1,213 @@
-DECLARE @FromDate date = '2025-11-20';
-DECLARE @ToDate   date = '2025-11-26';
+/****** Object:  StoredProcedure [dbo].[Check_Customer_Payment_Status]    Script Date: 10/15/2026 11:02:55 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
 
-SELECT 
-    UserCode,
-    CAST(LoginDateTime AS date) AS LoginDate,
-    MAX(LoginDateTime) AS LastLoginThatDay
-FROM UserLoginInfos
-WHERE LoginDateTime >= @FromDate
-  AND LoginDateTime < DATEADD(DAY, 1, @ToDate)
-GROUP BY 
-    UserCode,
-    CAST(LoginDateTime AS date);
+ALTER PROCEDURE [dbo].[Check_Customer_Payment_Status]
+      @CompanyCode       NVARCHAR(50),
+    @CustomerCode      NVARCHAR(50),
+    @Division          NVARCHAR(10),
+    @IsEligible        BIT           OUTPUT,
+    @ResultMessage     NVARCHAR(500) OUTPUT,
+    @OutstandingAmount DECIMAL(18,2) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @CCA NVARCHAR(10),
+		  @DivisionDisplay NVARCHAR(10),
+		   @D0_30    DECIMAL(18,2) = 0,
+            @D31_60   DECIMAL(18,2) = 0,
+            @D61_90   DECIMAL(18,2) = 0,
+            @D91_120  DECIMAL(18,2) = 0,
+            @D121_150 DECIMAL(18,2) = 0,
+            @D151_180 DECIMAL(18,2) = 0,
+            @D181_210 DECIMAL(18,2) = 0,
+            @D210_365 DECIMAL(18,2) = 0,
+            @Over365  DECIMAL(18,2) = 0,
+			 @TLAmt    DECIMAL(18,2) = 0;
+
+
+
+        -- Normalize Division
+        SET @Division = LTRIM(RTRIM(@Division));
+
+		  SET @DivisionDisplay =
+            CASE 
+                WHEN @Division = '25' THEN 'FC'
+                ELSE @Division
+            END;
+
+        -- Company-specific Division → CCA mapping
+
+		-- Temporary logic for CompanyCode 1070
+		-- Business rules are not finalized yet.
+		IF @CompanyCode = '1070'
+		BEGIN
+			-- Allow Division 27 for temporary flow
+			IF @Division = '27'
+			BEGIN
+				SET @IsEligible = 1;
+				SET @ResultMessage = N'Payment validation skipped for CompanyCode 1070. Order allowed.';
+				SET @OutstandingAmount = 0;
+				RETURN 0;
+			END
+			ELSE
+			BEGIN
+				SET @CCA = NULL;
+			END
+		END
+
+		ELSE IF @CompanyCode = '1049'
+		BEGIN
+			SET @CCA =
+				CASE
+					WHEN @Division = '25' THEN 'AGSD'
+					WHEN @Division = 'VG' THEN 'AGSV'
+					ELSE NULL
+				END;
+		END
+
+		ELSE IF @CompanyCode = '1054'
+		BEGIN
+			SET @CCA =
+				CASE
+					WHEN @Division = '29' THEN 'AGMH'
+					ELSE NULL
+				END;
+		END
+
+		ELSE
+		BEGIN
+			SET @CCA = NULL;
+		END
+        -- Validate Division
+        IF @CCA IS NULL
+        BEGIN
+            SET @IsEligible = 0;
+            SET @ResultMessage = N'Invalid Division provided for CompanyCode '+@Division + @CompanyCode + N'.';
+            SET @OutstandingAmount = 0;
+            RETURN 0;
+        END;
+
+        -- Check ageing data
+		IF NOT EXISTS
+        (
+            SELECT 1
+            FROM TB_CustomerAgeingReport
+            WHERE CompanyCode = @CompanyCode
+              AND CustomerCode = @CustomerCode
+              AND CCA = @CCA
+              AND GLAccount <> 23587002
+        )
+        BEGIN
+            SET @IsEligible = 1;
+            SET @ResultMessage = N'No ageing data found for division ' + @DivisionDisplay + N'.Order allowed.';
+            SET @OutstandingAmount = 0;
+            RETURN 0;
+        END;
+
+      
+            SELECT TOP (1)
+                 @D0_30    = ISNULL([0_30_Days],0),
+            @D31_60   = ISNULL([31_60_Days],0),
+            @D61_90   = ISNULL([61_90_Days],0),
+            @D91_120  = ISNULL([91_120_Days],0),
+            @D121_150 = ISNULL([121_150_Days],0),
+            @D151_180 = ISNULL([151_180_Days],0),
+            @D181_210 = ISNULL([181_210_Days],0),
+            @D210_365 = ISNULL([210_365_Days],0),
+            @Over365  = ISNULL([Over_365_Days],0),
+               @TLAmt    = ISNULL(TLAmt,0)  
+            FROM TB_CustomerAgeingReport
+            WHERE CompanyCode  = @CompanyCode
+              AND CustomerCode = @CustomerCode
+              AND CCA = @CCA
+              AND GLAccount <> 23587002
+            ORDER BY
+                TRY_CONVERT(datetime, updated_by) DESC,
+                GLAccount DESC
+        
+        SET
+            @OutstandingAmount =
+                  @D0_30 + @D31_60 + @D61_90 +
+            @D91_120 + @D121_150 + @D151_180 +
+            @D181_210 + @D210_365 + @Over365;
+        
+
+		 /* ===============================
+           COMPANY-SPECIFIC ELIGIBILITY
+           =============================== */
+
+        -- MASL
+        IF @CompanyCode = '1049'
+        BEGIN
+            IF 
+           (@D91_120  > 0 OR
+                @D121_150 > 0 OR
+                @D151_180 > 0 OR
+                @D181_210 > 0 OR
+                @D210_365 > 0 OR
+				 @Over365  > 0
+				)
+            BEGIN
+                SET @IsEligible = 0;
+                SET @ResultMessage =
+                    N'Outstanding debit exists beyond 90 days for division '+@DivisionDisplay + N' . Order blocked.';
+            END
+            ELSE
+            BEGIN
+                SET @IsEligible = 1;
+                SET @ResultMessage =
+                    N'Only credit or zero beyond 90 days for division' +@DivisionDisplay + N'. Order allowed.';
+            END
+        END
+
+        -- MHZPC
+        ELSE IF @CompanyCode = '1054'
+        BEGIN
+		 IF (@TLAmt > 0)
+            BEGIN
+                SET @IsEligible = 0;
+                SET @ResultMessage =
+                    N'Debit outstanding found (TL Amount > 0) for division ' + @DivisionDisplay + N'. Order blocked.';
+            END
+            ELSE
+            BEGIN
+                SET @IsEligible = 1;
+                SET @ResultMessage =
+                    N'Total Outstanding Amount is zero or credit for division ' + @DivisionDisplay + N'. Order allowed.';
+            END
+        END
+    --         IF (@D0_30  > 0 OR
+    --            @D31_60 > 0 OR
+    --            @D61_90 > 0 OR
+    --            @D91_120 > 0 OR
+    --            @D121_150 > 0 OR
+    --            @D151_180 > 0 OR
+    --            @D181_210 > 0 OR
+    --            @D210_365 > 0 OR
+				--@Over365  > 0
+				--)
+    --        BEGIN
+    --            SET @IsEligible = 0;
+    --            SET @ResultMessage =
+    --                N'Debit outstanding found in ageing buckets for division'+ @DivisionDisplay +N'. Order blocked.';
+    --        END
+    --        ELSE
+    --        BEGIN
+    --            SET @IsEligible = 1;
+    --            SET @ResultMessage =
+    --                N'No debit outstanding for division' + @DivisionDisplay + N'. Order allowed.';
+    --        END
+    --    END
+
+    END TRY
+    BEGIN CATCH
+        SET @IsEligible = 0;
+        SET @OutstandingAmount = 0;
+        SET @ResultMessage = ERROR_MESSAGE();
+    END CATCH
+END
